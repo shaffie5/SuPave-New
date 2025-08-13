@@ -5,3 +5,6 @@ plotly
 pydeck
 matplotlib
 scipy
+openpyxl
+xlrd==1.2.0
+
