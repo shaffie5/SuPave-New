@@ -369,8 +369,7 @@ if uploaded_file:
                     fig_risk.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="black", opacity=0.15)
             st.plotly_chart(fig_risk, use_container_width=True)
     # ==== END Risk Area Heatmap ====
-    # ================== Temperature & TSI / DRS PROFILES ===================
-    # Build a row-wise view for profiles (rows = Moving distance bins, columns = widths)
+        # ================== TSI CALCULATION ONLY ===================
     df_trimmed = pd.DataFrame(
         grid.T.values,
         columns=grid.index.astype(float),
@@ -378,74 +377,142 @@ if uploaded_file:
     ).copy()
     df_trimmed["Moving distance"] = df_trimmed.index.values
 
-    # X (paving width) and Y (moving distance) axes for pcolormesh
     widths_cols = [c for c in df_trimmed.columns if c != "Moving distance"]
-    widths_2 = np.array(widths_cols, dtype=float)
-    Y2 = df_trimmed["Moving distance"].to_numpy()
-
-    st.subheader("Temperature & TSI Profiles")
     temps = df_trimmed[widths_cols].values
+
+    # Calculate TSI_C = Max Temp - Mean Temp (per moving distance row)
     df_trimmed['TSI_C'] = temps.max(axis=1) - temps.mean(axis=1)
+
+    # Calculate overall average TSI_C
     avg_tsi = df_trimmed['TSI_C'].mean()
-    tsi_cat = ('Low' if avg_tsi <= 5 else
-               'Moderate' if avg_tsi <= 20 else 'High')
-    fig4, (ax4, ax5) = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
-    pcm4 = ax4.pcolormesh(widths_2, Y2, temps, shading='auto')
-    ax4.set_title("Temperature [°C]")
-    ax4.set_xlabel("Paving width (m)")
-    ax4.set_ylabel("Moving distance (m)")
-    fig4.colorbar(pcm4, ax=ax4)
-    Z_tsi = np.tile(df_trimmed['TSI_C'].values[:, None], (1, len(widths_2)))
-    pcm5 = ax5.pcolormesh(widths_2, Y2, Z_tsi, shading='auto', cmap='inferno')
-    ax5.set_title("TSI Profile [°C]")
-    ax5.set_xlabel("Paving width (m)")
-    fig4.suptitle(f"Average TSI: {avg_tsi:.2f}°C → {tsi_cat} Segregation")
-    fig4.colorbar(pcm5, ax=ax5)
-    st.pyplot(fig4)
 
-    st.subheader("Differential Range Statistics (DRS)")
-    temps_all = temps.flatten()
-    T10_C = np.percentile(temps_all, 10)
-    T90_C = np.percentile(temps_all, 90)
-    DRS_C = T90_C - T10_C
-    DRS_F = DRS_C * 9/5 + 32
-    drs_severity = ('Low' if DRS_C <= 5 else
-                    'Moderate' if DRS_C <= 10 else 'High')
+    # Show just the numeric result
+    st.subheader("Temperature Segregation Index (TSI)")
+    st.write(f"Average TSI (Max Temp - Mean Temp): **{avg_tsi:.2f} °C**")
+
+         # ================== FILTERED DRS (T98.5 − T1) ===================
+    # Only compute DRS for rows (distance bins) with sufficient valid samples,
+    # and show a histogram based on reliable rows only.
+    
+    # --- Controls
+    min_valid_per_row = 10
+    
+    
+    # --- Helper for row-wise DRS using percentiles that ignore NaNs
+    def drs_row_percentiles(arr_1d: np.ndarray) -> float:
+        arr = arr_1d.astype(float)
+        arr = arr[~np.isnan(arr)]
+        if arr.size == 0:
+            return np.nan
+        p_low = np.percentile(arr, 1.0)
+        p_high = np.percentile(arr, 98.5)
+        return float(p_high - p_low)
+    
+    # Count valid samples per row (across width columns)
+    row_valid_counts = df_trimmed[widths_cols].count(axis=1)
+    reliable_mask = row_valid_counts >= min_valid_per_row
+    
+    # Compute row-wise DRS, then keep only reliable rows for visualization/statistics
+    row_drs_all = df_trimmed[widths_cols].apply(lambda r: drs_row_percentiles(r.to_numpy()), axis=1)
+    row_drs_reliable = row_drs_all[reliable_mask]
+    
+    # Overall DRS from reliable rows only (flattened)
+    temps_reliable = df_trimmed.loc[reliable_mask, widths_cols].to_numpy().astype(float)
+    temps_reliable = temps_reliable[~np.isnan(temps_reliable)]
+    if temps_reliable.size > 0:
+        T_low = np.percentile(temps_reliable, 1.0)
+        T_high = np.percentile(temps_reliable, 98.5)
+        DRS_C = float(T_high - T_low)
+        DRS_F = DRS_C * 9.0 / 5.0  # range conversion (no +32 for differences)
+    else:
+        T_low = T_high = DRS_C = DRS_F = np.nan
+    
+    # Summary table (filtered)
     summary = pd.DataFrame({
-        'Statistic': ['T10 (°C)', 'T90 (°C)', 'DRS (°C)', 'DRS (°F)', 'Severity'],
-        'Value': [T10_C, T90_C, DRS_C, DRS_F, drs_severity]
+        'Statistic': ['T1 (°C)', 'T98.5 (°C)', 'DRS (°C)', 'DRS (°F)'],
+        'Value': [T_low, T_high, DRS_C, DRS_F]
     })
+    st.subheader("Differential Range Statistics (Filtered to Reliable Rows)")
     st.text(summary.to_string(index=False))
+    
+    # Histogram of reliable row-wise DRS with KDE
+    if row_drs_reliable.dropna().empty:
+        st.info("No reliable rows available for DRS histogram. Increase data coverage or lower the minimum valid samples per row.")
+    else:
+        fig_drs_hist, ax_drs_hist = plt.subplots(figsize=(10, 5))
+        counts, bins, _ = ax_drs_hist.hist(
+            row_drs_reliable.dropna(),
+            bins=30, density=True, alpha=0.6,
+            color='skyblue', edgecolor='black'
+        )
+        # KDE on reliable data
+        try:
+            kde = gaussian_kde(row_drs_reliable.dropna())
+            x_vals = np.linspace(float(row_drs_reliable.min()), float(row_drs_reliable.max()), 500)
+            ax_drs_hist.plot(x_vals, kde(x_vals), linewidth=2, color='darkred', label='Density Curve')
+        except Exception:
+            pass
+        ax_drs_hist.set_title("Histogram of Row-Wise DRS (T98.5 − T1)")
+        ax_drs_hist.set_xlabel("Row-wise DRS (°C)")
+        ax_drs_hist.set_ylabel("Density")
+        ax_drs_hist.legend(loc="upper right")
+        st.pyplot(fig_drs_hist)
+       
 
-    st.subheader("Distribution of Differential Range Statistics (Row-Wise)")
-    row_drs = df_trimmed[widths_cols].apply(
-        lambda row: np.percentile(row, 90) - np.percentile(row, 10), axis=1
-    )
-    df_trimmed['DRS_row'] = row_drs
+    
+    # # Flag outlier rows (reliable but above cap)
+    # flag_mask = reliable_mask & (row_drs_all > drs_flag_cap)
+    # if flag_mask.any():
+    #     flagged = pd.DataFrame({
+    #         "Moving distance (m)": df_trimmed.loc[flag_mask, "Moving distance"].values,
+    #         "DRS (°C)": row_drs_all.loc[flag_mask].values,
+    #         "Valid samples": row_valid_counts.loc[flag_mask].values
+    #     }).sort_values("DRS (°C)", ascending=False)
+    #     with st.expander(f"Show rows flagged with DRS > {drs_flag_cap:.1f} °C ({int(flag_mask.sum())} rows)"):
+    #         st.dataframe(flagged.reset_index(drop=True))
+    # else:
+    #     st.caption(f"No reliable rows exceeded the flag threshold of {drs_flag_cap:.1f} °C.")
 
-    fig_drs_hist, ax_drs_hist = plt.subplots(figsize=(10, 5))
-    counts, bins, _ = ax_drs_hist.hist(row_drs, bins=30, color='skyblue', edgecolor='black', density=True, alpha=0.6)
-    kde = gaussian_kde(row_drs)
-    x_vals = np.linspace(float(row_drs.min()), float(row_drs.max()), 500)
-    ax_drs_hist.plot(x_vals, kde(x_vals), color='darkred', linewidth=2, label='Density Curve')
-    ax_drs_hist.set_title("Histogram of Row-Wise DRS Values with KDE")
-    ax_drs_hist.set_xlabel("DRS per Row (°C)")
-    ax_drs_hist.set_ylabel("Density")
-    ax_drs_hist.legend()
-    st.pyplot(fig_drs_hist)
+# ================== Differential Range Statistics (DRS) ===================
+    # # Use 1st and 98.5th percentiles — matches provided distribution figure
+    # temps_all = temps.flatten()
+    # T_low = np.percentile(temps_all, 1.0)
+    # T_high = np.percentile(temps_all, 98.5)
+    # DRS_C = float(T_high - T_low)
+    # DRS_F = DRS_C * 9.0/5.0  # range conversion (no +32 for differences)
 
-    st.subheader("Average Temperature Along the Paving Width per Moving Distance")
-    df_trimmed["Avg_Temp_Row"] = df_trimmed[widths_cols].mean(axis=1)
-    avg_temp_moving = df_trimmed[["Moving distance", "Avg_Temp_Row"]].copy()
-    avg_temp_moving = avg_temp_moving.sort_values("Moving distance")
-    fig_avg_moving = px.line(
-        avg_temp_moving,
-        x="Moving distance",
-        y="Avg_Temp_Row",
-        title="Average Temperature Along Paving Width (per Moving Distance)",
-        labels={"Moving distance": "Moving Distance (m)", "Avg_Temp_Row": "Average Temperature (°C)"},
-    )
-    st.plotly_chart(fig_avg_moving, use_container_width=True)
+    # # (Optional) Keep the same severity bands; adjust if you have spec thresholds
+    # drs_severity = ('Low' if DRS_C <= 5 else
+    #                 'Moderate' if DRS_C <= 10 else 'High')
+
+    # summary = pd.DataFrame({
+    #     'Statistic': ['T1 (°C)', 'T98.5 (°C)', 'DRS (°C)', 'DRS (°F)', 'Severity'],
+    #     'Value': [T_low, T_high, DRS_C, DRS_F, drs_severity]
+    # })
+    # st.subheader("Differential Range Statistics (DRS)")
+    # st.text(summary.to_string(index=False))
+
+    # st.subheader("Distribution of Differential Range Statistics (Row-Wise)")
+    # # Row-wise DRS with 1% and 98.5% percentiles
+    # def drs_row(p):
+    #     arr = p.to_numpy(dtype=float)
+    #     return np.percentile(arr, 98.5) - np.percentile(arr, 1.0)
+
+    # row_drs = df_trimmed[widths_cols].apply(drs_row, axis=1)
+    # df_trimmed['DRS_row'] = row_drs
+
+    # fig_drs_hist, ax_drs_hist = plt.subplots(figsize=(10, 5))
+    # counts, bins, _ = ax_drs_hist.hist(row_drs, bins=30, color='skyblue', edgecolor='black', density=True, alpha=0.6)
+    # kde = gaussian_kde(row_drs)
+    # x_vals = np.linspace(float(row_drs.min()), float(row_drs.max()), 500)
+    # ax_drs_hist.plot(x_vals, kde(x_vals), color='darkred', linewidth=2, label='Density Curve')
+    # ax_drs_hist.set_title("Histogram of Row-Wise DRS (T98.5 − T1)")
+    # ax_drs_hist.set_xlabel("Row-wise DRS (°C)")
+    # ax_drs_hist.set_ylabel("Density")
+    # ax_drs_hist.legend()
+    # st.pyplot(fig_drs_hist)
+
+   
     # ---- Summary
     if stop_count > 0:
         st.success(f"Detected **{stop_count}** paver stop(s). Total idle time: **{total_idle:.1f} s**, average: **{avg_idle:.1f} s**.")
