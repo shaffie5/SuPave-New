@@ -1,10 +1,10 @@
-streamlit
-pandas
-numpy
-plotly
-pydeck
-matplotlib
-scipy
-openpyxl
-xlrd==1.2.0
+streamlit>=1.36
+pandas>=2.0
+numpy>=1.24
+plotly>=5.20
+pydeck>=0.9
+matplotlib>=3.7
+scipy>=1.11
+openpyxl>=3.1
+pyproj>=3.6
 
