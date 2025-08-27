@@ -22,6 +22,44 @@ st.caption(
     "If latitude/longitude is present, easting/northing will be ignored."
 )
 
+# --- Downloadable Excel template section ---
+import pathlib
+
+TEMPLATE_PATH = pathlib.Path("Paver_Upload_Template.xlsx")
+
+with st.expander("📄 Download input template"):
+    st.markdown(
+        """
+This Excel template provides the **required structure** for SuPave.
+
+**What it contains:**
+- A `README` sheet that describes each field.
+- A `Template` sheet with the correct column headers.
+
+**Required columns:**
+- **Time** → timestamp of each reading (any parseable datetime).
+- **Moving distance** → cumulative distance along paving (m).
+- **Coordinates** → either latitude/longitude (WGS84) or easting/northing (Belgian Lambert 72 or similar).
+- **Temperature columns** → headers in the form `6.25 m [°C] L`, `0.00 m [°C]`, `6.25 m [°C] R`.  
+  Negative (L) = left of centerline, Positive (R) = right, 0.00 = centerline.
+
+You may add more width columns at your chosen spacing (e.g. every 0.25 m).  
+The app will automatically detect them.
+        """
+    )
+    if TEMPLATE_PATH.exists():
+        with open(TEMPLATE_PATH, "rb") as f:
+            st.download_button(
+                label="📥 Download Excel template",
+                data=f.read(),
+                file_name="SuPave_Input_Template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+    else:
+        st.warning("Template file not found in the app folder.")
+
+
 #  glossary for the page
 with st.expander("Pave Quality Performance Indicators"):
     st.markdown(
@@ -815,3 +853,4 @@ else:
     st.info("Please upload an Excel file to proceed.")
     
     
+
