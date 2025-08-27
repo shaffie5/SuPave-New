@@ -185,7 +185,7 @@ def detect_stops_by_temperature(df: pd.DataFrame,
     return pd.DataFrame(rows)
 
 # ---- File Upload ----
-uploaded_file = st.file_uploader("Upload your paving temperature file", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Upload your paving temperature file which follows the template format", type=["xlsx", "xls"])
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -853,4 +853,5 @@ else:
     st.info("Please upload an Excel file to proceed.")
     
     
+
 
