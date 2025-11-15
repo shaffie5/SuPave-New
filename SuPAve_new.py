@@ -24,6 +24,7 @@ st.caption(
 
 # --- Downloadable Excel template section ---
 import pathlib
+import zipfile
 
 TEMPLATE_PATH = pathlib.Path("Paver_Upload_Template.xlsx")
 
@@ -68,6 +69,54 @@ with st.expander("Pave Quality Performance Indicators"):
         "- **Cold Risk:** Cells below a fixed threshold (e.g., 120 °C). Indicates potential insufficient compaction and poorer bonding.\n"
         "- **Risk Area (Relative):** Cells below a chosen % of the overall average temperature (default 90%). Highlights *relative* cold spots."
     )
+
+# --- Download entire repository section ---
+with st.expander("📦 Download Repository"):
+    st.markdown(
+        """
+This option allows you to **download all SuPave project files** as a ZIP archive.
+
+**What's included:**
+- `SuPAve_new.py` → the main application code
+- `requirements.txt` → Python dependencies list
+- `README.md` → project documentation and user manual
+- `Paver_Upload_Template.xlsx` → Excel template for data input
+
+Use this to run the application locally on your own machine or share the complete project.
+        """
+    )
+    
+    def create_repository_zip():
+        """Create a ZIP file containing all repository files."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Define files to include
+            files_to_include = [
+                ("SuPAve_new.py", "SuPAve_new.py"),
+                ("requirements.txt", "requirements.txt"),
+                ("README.md", "README.md"),
+                ("Paver_Upload_Template.xlsx", "Paver_Upload_Template.xlsx")
+            ]
+            
+            for file_path, archive_name in files_to_include:
+                p = pathlib.Path(file_path)
+                if p.exists():
+                    zipf.write(p, archive_name)
+        
+        buf.seek(0)
+        return buf.read()
+    
+    try:
+        repo_zip = create_repository_zip()
+        st.download_button(
+            label="📥 Download Complete Repository (ZIP)",
+            data=repo_zip,
+            file_name="SuPave_Repository.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.error(f"Error creating repository ZIP: {e}")
 
 # ---- Helpers ----
 WIDTH_COL_RE = re.compile(r'^\s*(-?\d+(?:\.\d+)?)\s*m\s*\[\s*°C\s*\]\s*([LR])?\s*$', re.I)
