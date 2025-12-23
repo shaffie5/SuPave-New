@@ -2,6 +2,7 @@
 """
 Created on Fri Aug 8 2025
 @author: SuPAR Group ~ Shaffie & Reza (updated)
+Merged: Robust Data Parsing + Full Quality Metrics + User Explanations + Summary
 """
 
 import re
@@ -19,10 +20,29 @@ import csv
 st.set_page_config(page_title="Paving Temperature Visualizer", layout="wide")
 st.title("SuPave Dashboard (Robust + Metrics)")
 
+# ==========================================
+# 0. SUMMARY TEXT (Added as requested)
+# ==========================================
+with st.expander("**How this Dashboard Works** (Click to Close)", expanded=True):
+    st.markdown("""
+    **SuPave** turns raw paving data into actionable quality insights.
+    
+    1.  **Universal Data Import**: 
+        * Accepts **Raw Scanner CSVs** (detects `[DATA]` tags & `PavingWidth`) or **Excel Templates**.
+        * *Auto-Cleaning*: Automatically fixes encoding errors (e.g., `Â°C` symbols) and resamples raw scanner columns to a readable grid.
+    
+    2.  **Smart Stop Detection (Kinematic)**:
+        * Instead of guessing based on cooling, we calculate the **Velocity** of the paver.
+        * It filters out GPS noise ("drift") to accurately identify when the paver stops (e.g., waiting for trucks), which often causes thermal segregation.
+    
+    3.  **Key Quality Metrics**:
+        * **Heatmaps:** Visualize the entire mat temperature, plus specific **Cold Spots** and **Risk Areas**.
+        * **TSI (Temperature Segregation Index):** Measures how much temperature varies across the width (Max - Mean).
+        * **DRS (Differential Range Statistics):** A robust measure of temperature spread (T98.5 - T1.0).
+    """)
+
 st.caption(
-    "Upload your Paving Data. Supports: \n"
-    "1. **Filled Excel Template** (.xlsx) \n"
-    "2. **Raw Scanner CSVs** (e.g., with [DATA] tags and Scanner[i] columns)"
+    "Upload your Paving Data below. The app handles raw CSVs automatically."
 )
 
 # --- Downloadable Excel template section ---
@@ -281,7 +301,6 @@ if uploaded_file:
         st.divider()
         st.subheader("Stop Detection")
         
-        # ADDED EXPLANATIONS HERE
         stop_speed_thresh = st.number_input(
             "Stop Velocity (m/min)", 
             min_value=0.1, max_value=10.0, value=1.0, step=0.1,
