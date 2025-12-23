@@ -2,7 +2,6 @@
 """
 Created on Fri Aug 8 2025
 @author: SuPAR Group ~ Shaffie & Reza (updated)
-Merged: Robust Data Parsing + Full Quality Metrics (TSI, DRS, Cold Risk)
 """
 
 import re
@@ -29,7 +28,7 @@ st.caption(
 # --- Downloadable Excel template section ---
 TEMPLATE_PATH = pathlib.Path("Paver_Upload_Template.xlsx")
 
-with st.expander("📄 Download input template (for manual data)"):
+with st.expander("Download input template (for manual data)"):
     st.markdown(
         """
         **Required columns for Excel:**
@@ -42,7 +41,7 @@ with st.expander("📄 Download input template (for manual data)"):
     if TEMPLATE_PATH.exists():
         with open(TEMPLATE_PATH, "rb") as f:
             st.download_button(
-                label="📥 Download Excel template",
+                label="Download Excel template",
                 data=f.read(),
                 file_name="SuPave_Input_Template.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -275,14 +274,30 @@ if uploaded_file:
             st.warning("Scanner columns detected but PavingWidth was missing in the header.")
         st.stop()
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (WITH EXPLANATIONS) ---
     with st.sidebar:
         st.header("Paving Settings")
         width_min, width_max = st.slider("Paving width range (m)", -6.25, 6.25, (-2.0, 2.0), 0.25)
         st.divider()
         st.subheader("Stop Detection")
-        stop_speed_thresh = st.number_input("Stop Velocity (m/min)", 0.1, 10.0, 1.0)
-        min_stop_dur = st.number_input("Min Stop Duration (s)", 1.0, 300.0, 15.0)
+        
+        # ADDED EXPLANATIONS HERE
+        stop_speed_thresh = st.number_input(
+            "Stop Velocity (m/min)", 
+            min_value=0.1, max_value=10.0, value=1.0, step=0.1,
+            help="The speed below which the paver is considered 'stopped'. \n\n"
+                 "• If the paver moves slower than this (e.g., 1 meter/minute), the app counts it as idle time.\n"
+                 "• Increase this if the app misses stops (e.g., due to GPS drift)."
+        )
+        
+        min_stop_dur = st.number_input(
+            "Min Stop Duration (s)", 
+            min_value=1.0, max_value=300.0, value=15.0, step=1.0,
+            help="The minimum time the paver must remain stopped to be flagged.\n\n"
+                 "• Stops shorter than this (e.g., a 5-second pause) are ignored.\n"
+                 "• Use this to filter out tiny pauses and focus on real interruptions."
+        )
+        
         st.divider()
         st.subheader("Quality Thresholds")
         cold_thr = st.slider("Cold-risk (°C)", 60, 200, 120)
@@ -502,7 +517,7 @@ if uploaded_file:
             if not cold_list.empty: cold_list.to_excel(writer, sheet_name='Coldspots', index=False)
             if not risk_list.empty: risk_list.to_excel(writer, sheet_name='RiskAreas', index=False)
             
-        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Paver_Analysis_Report.xlsx")
+        st.download_button("Download Excel Report", data=output.getvalue(), file_name="Paver_Analysis_Report.xlsx")
 
 else:
     st.info("Please upload an Excel file or Pave CSV.")
