@@ -2,7 +2,7 @@
 """
 Created on Fri Aug 8 2025
 @author: SuPAR Group ~ Shaffie & Reza (updated)
-Merged with Robust Normalizer logic
+Merged: Robust Data Parsing + Full Quality Metrics (TSI, DRS, Cold Risk)
 """
 
 import re
@@ -18,7 +18,7 @@ import pathlib
 import csv
 
 st.set_page_config(page_title="Paving Temperature Visualizer", layout="wide")
-st.title("SuPave Dashboard (Robust)")
+st.title("SuPave Dashboard (Robust + Metrics)")
 
 st.caption(
     "Upload your Paving Data. Supports: \n"
@@ -50,7 +50,7 @@ with st.expander("📄 Download input template (for manual data)"):
             )
 
 # ==========================================
-# 1. ROBUST PARSING HELPERS (From Normalizer)
+# 1. ROBUST PARSING HELPERS
 # ==========================================
 
 def clean_header(header: str) -> str:
@@ -65,7 +65,6 @@ SCANNER_RE = re.compile(r"scanner\s*\[?_?(\d+)\]?.*\[(?:°|deg\s*)?c\]", re.I)
 
 def col_to_width(col: str):
     """Parses headers like '6.25 m [°C] R' into float 6.25"""
-    # Clean header first to ensure ° matches
     s = clean_header(col)
     m = WIDTH_COL_RE.match(s)
     if not m:
@@ -129,11 +128,8 @@ def load_robust_data(uploaded_file):
     if filename.endswith(('.xlsx', '.xls')):
         return pd.read_excel(uploaded_file)
     
-    # B. CSV (The tricky part)
-    # We must read the file into text first to parse the header
+    # B. CSV
     content_bytes = uploaded_file.getvalue()
-    
-    # Detect encoding
     encoding = 'utf-8'
     try:
         content_bytes.decode('utf-8')
@@ -143,7 +139,7 @@ def load_robust_data(uploaded_file):
     text_content = content_bytes.decode(encoding, errors='replace')
     lines = text_content.splitlines()
     
-    # 1. Extract PavingWidth
+    # Extract PavingWidth & Data Start
     paving_width = None
     data_start_idx = None
     
@@ -154,7 +150,6 @@ def load_robust_data(uploaded_file):
             break
         
         if line_clean.lower().startswith("pavingwidth"):
-            # Split by ; : or ,
             parts = re.split(r"[;:,]", line_clean)
             for p in parts[1:]:
                 if p.strip():
@@ -164,21 +159,14 @@ def load_robust_data(uploaded_file):
                     except ValueError:
                         continue
 
-    # 2. Load Data Frame
     if data_start_idx is not None:
-        # Data starts AFTER [DATA] tag
-        # Determine separator
         sep = ';' if lines[data_start_idx].count(';') > lines[data_start_idx].count(',') else ','
-        
-        # Use StringIO to feed the data part to pandas
         data_str = "\n".join(lines[data_start_idx+1:])
         df = pd.read_csv(io.StringIO(data_str), sep=sep)
     else:
-        # Fallback: No [DATA] tag, assume standard CSV
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, encoding=encoding, on_bad_lines='skip')
 
-    # 3. Resample if we found a width
     if paving_width:
         st.success(f"Detected Raw CSV. Resampling scanners using PavingWidth: {paving_width}m")
         df = resample_scanners(df, paving_width)
@@ -241,7 +229,6 @@ def detect_stops_kinematic(df: pd.DataFrame, time_col: str, dist_col: str,
             })
     return pd.DataFrame(rows)
 
-
 # ==========================================
 # 3. MAIN APP UI
 # ==========================================
@@ -256,12 +243,9 @@ if uploaded_file:
         st.error(f"Error loading file: {e}")
         st.stop()
 
-    # --- NORMALIZE HEADERS ---
-    # Fix the Â° symbol in headers so mapping works
+    # --- NORMALIZE HEADERS & COLUMN MAPPING ---
     df.columns = [clean_header(c) for c in df.columns]
 
-    # --- COLUMN MAPPING ---
-    # Smart-map variations of "Moving distance" etc.
     CORE_MAP = {
         "Time": ["time", "timestamp", "datetime", "date time"],
         "Moving distance": ["moving distance", "distance", "dist", "chainage", "station", "distance [m]"],
@@ -271,27 +255,24 @@ if uploaded_file:
         "northing": ["northing", "utm_n", "y"],
     }
     
-    # Rename columns to standard names
     for col in df.columns:
         c_lower = col.strip().lower()
         for std, variants in CORE_MAP.items():
             if c_lower in variants:
                 df.rename(columns={col: std}, inplace=True)
 
-    # --- COORD CHECK ---
+    # --- COORD & TEMP CHECK ---
     has_latlon = "latitude" in df.columns and "longitude" in df.columns
     has_en = "easting" in df.columns and "northing" in df.columns
 
-    # --- TEMP COLUMN CHECK ---
     temp_cols = [c for c in df.columns if "°C" in c or "[C]" in c]
     width_map = {c: col_to_width(c) for c in temp_cols}
-    # Only keep columns that successfully mapped to a width
     temp_cols = [c for c, w in width_map.items() if w is not None]
 
     if not temp_cols:
         st.error("No valid temperature columns found. (Expected format: '6.25 m [°C] R')")
         if "Scanner[1]" in str(df.columns):
-            st.warning("Scanner columns detected but PavingWidth was missing in the header, so they couldn't be resampled.")
+            st.warning("Scanner columns detected but PavingWidth was missing in the header.")
         st.stop()
 
     # --- SIDEBAR ---
@@ -302,6 +283,10 @@ if uploaded_file:
         st.subheader("Stop Detection")
         stop_speed_thresh = st.number_input("Stop Velocity (m/min)", 0.1, 10.0, 1.0)
         min_stop_dur = st.number_input("Min Stop Duration (s)", 1.0, 300.0, 15.0)
+        st.divider()
+        st.subheader("Quality Thresholds")
+        cold_thr = st.slider("Cold-risk (°C)", 60, 200, 120)
+        risk_pct = st.slider("Risk area (%)", 80, 100, 90)
 
     # --- DATA CLEANING ---
     needed = ["Time", "Moving distance"]
@@ -311,16 +296,13 @@ if uploaded_file:
     for col in needed:
         if col not in df.columns: df[col] = np.nan
 
-    # Time & Distance Fixes
     df["Time"] = robust_datetime(df["Time"])
     df = df.sort_values("Time").reset_index(drop=True)
 
-    # Monotonic Distance Force
     if "Moving distance" in df.columns:
         df["Moving distance"] = pd.to_numeric(df["Moving distance"], errors='coerce').ffill()
         df["Moving distance"] = df["Moving distance"].cummax()
 
-    # Filter by width
     selected_cols = [c for c in temp_cols if width_min <= width_map[c] <= width_max]
     if not selected_cols:
         st.warning(f"No columns found in width range {width_min}m to {width_max}m.")
@@ -330,29 +312,25 @@ if uploaded_file:
     stops = detect_stops_kinematic(df, "Time", "Moving distance", stop_speed_thresh, min_stop_dur)
     stop_count = len(stops)
 
-    # --- HEATMAP GENERATION ---
+    # --- HEATMAP DATA ---
     bin_size = 5.0
     temp_long = df.melt(id_vars=needed, value_vars=selected_cols, var_name="WidthCol", value_name="Temperature")
     temp_long["Width_m"] = temp_long["WidthCol"].map(width_map)
     temp_long["Temperature"] = pd.to_numeric(temp_long["Temperature"], errors="coerce")
-    
-    # Filter noise
     temp_long.loc[temp_long["Temperature"] <= 10.0, "Temperature"] = np.nan 
 
     temp_long["dist_bin"] = (
         np.round(pd.to_numeric(temp_long["Moving distance"], errors="coerce") / bin_size) * bin_size
     ).astype(float)
 
-    # Pivot & Interpolate
     grid = temp_long.pivot_table(
         index="Width_m", columns="dist_bin", values="Temperature", aggfunc="mean"
     ).sort_index().sort_index(axis=1)
     
     grid = grid.interpolate(method='linear', axis=1, limit=1)
 
-    # --- PLOTLY HEATMAP ---
+    # --- 1. MAIN HEATMAP ---
     st.subheader(f"Paving Temperature Heatmap (Stops: {stop_count})")
-    
     fig = px.imshow(
         grid.values,
         x=grid.columns,
@@ -362,24 +340,105 @@ if uploaded_file:
         color_continuous_scale="Turbo",
         labels={"x": "Distance (m)", "y": "Width (m)", "color": "Temp (°C)"}
     )
-    
     if not stops.empty:
         for _, r in stops.iterrows():
             dmid = r["moving_dist_mid"]
             if pd.notna(dmid):
                 fig.add_vline(x=dmid, line_width=2, line_color="black", line_dash="dash", opacity=0.5)
                 fig.add_annotation(x=dmid, y=grid.index.max(), text=f"{r['duration_s']:.0f}s", showarrow=False, yshift=10)
-
     st.plotly_chart(fig, use_container_width=True)
 
-    # --- MAP ---
+    # --- 2. COLD RISK HEATMAP ---
+    st.subheader(f"Cold-risk Heatmap (T < {cold_thr} °C)")
+    cold_only = grid.where(grid < float(cold_thr), np.nan)
+    if np.isnan(cold_only.values).all():
+        st.info("No cells below cold threshold.")
+    else:
+        fig_cold = px.imshow(
+            cold_only.values,
+            x=cold_only.columns,
+            y=cold_only.index,
+            origin="lower",
+            aspect="auto",
+            color_continuous_scale="Blues",
+            labels={"x": "Distance (m)", "y": "Width (m)", "color": "Temp (°C)"}
+        )
+        st.plotly_chart(fig_cold, use_container_width=True)
+
+    # --- 3. RISK AREA HEATMAP ---
+    overall_mean = np.nanmean(grid.values)
+    risk_thresh_val = (risk_pct / 100.0) * overall_mean
+    st.subheader(f"Risk Area Heatmap (T < {risk_pct}% of Avg: {risk_thresh_val:.1f} °C)")
+    
+    risk_only = grid.where(grid < risk_thresh_val, np.nan)
+    if np.isnan(risk_only.values).all():
+        st.info("No risk areas detected.")
+    else:
+        fig_risk = px.imshow(
+            risk_only.values,
+            x=risk_only.columns,
+            y=risk_only.index,
+            origin="lower",
+            aspect="auto",
+            color_continuous_scale="Reds",
+            labels={"x": "Distance (m)", "y": "Width (m)", "color": "Temp (°C)"}
+        )
+        st.plotly_chart(fig_risk, use_container_width=True)
+
+    # --- 4. TSI CALCULATION ---
+    # TSI = Max - Mean per row (per distance bin)
+    df_trimmed = pd.DataFrame(grid.T.values, columns=grid.index, index=grid.columns)
+    # Each row is a distance bin, columns are widths
+    temps_arr = df_trimmed.values
+    tsi_per_row = np.nanmax(temps_arr, axis=1) - np.nanmean(temps_arr, axis=1)
+    avg_tsi = np.nanmean(tsi_per_row)
+
+    st.subheader("Temperature Segregation Index (TSI)")
+    st.caption("Average (Max - Mean) temperature across the mat width.")
+    st.metric("Average TSI", f"{avg_tsi:.2f} °C")
+
+    # --- 5. DRS CALCULATION & HISTOGRAM ---
+    # DRS = T98.5 - T1.0 per row
+    st.subheader("Differential Range Statistics (DRS: T98.5 - T1)")
+    
+    valid_mask = np.sum(~np.isnan(temps_arr), axis=1) >= 10  # Require at least 10 valid points
+    drs_values = []
+    
+    for row in temps_arr[valid_mask]:
+        row_clean = row[~np.isnan(row)]
+        if len(row_clean) > 0:
+            p_low = np.percentile(row_clean, 1.0)
+            p_high = np.percentile(row_clean, 98.5)
+            drs_values.append(p_high - p_low)
+            
+    if drs_values:
+        drs_values = np.array(drs_values)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Mean DRS", f"{np.mean(drs_values):.2f} °C")
+        with col2:
+            st.metric("Max DRS", f"{np.max(drs_values):.2f} °C")
+            
+        fig_hist, ax = plt.subplots(figsize=(8, 4))
+        ax.hist(drs_values, bins=30, density=True, alpha=0.6, color='skyblue', edgecolor='black')
+        try:
+            kde = gaussian_kde(drs_values)
+            x_range = np.linspace(min(drs_values), max(drs_values), 200)
+            ax.plot(x_range, kde(x_range), color='red', label='Density')
+        except: pass
+        ax.set_title("Histogram of Row-wise DRS")
+        ax.set_xlabel("DRS (°C)")
+        st.pyplot(fig_hist)
+    else:
+        st.info("Not enough data points per row to calculate reliable DRS.")
+
+    # --- 6. MAP ---
     df["avg_temp"] = df[selected_cols].mean(axis=1)
     map_df = pd.DataFrame()
 
     if has_latlon:
         map_df = df[["latitude", "longitude", "avg_temp"]].dropna().rename(columns={"latitude":"lat", "longitude":"lon"})
     elif has_en:
-        # Projection Fallback
         lons, lats = [], []
         try:
             from pyproj import Transformer
@@ -419,6 +478,31 @@ if uploaded_file:
         st.pydeck_chart(deck)
     else:
         st.info("No valid coordinates available for map.")
+
+    # --- 7. EXPORT ---
+    st.subheader("Export Data")
+    if st.button("Download Analysis (Excel)"):
+        # Helper to map grid cells back to rows (simplistic)
+        def flatten_heatmap(grid_df, label):
+            out_recs = []
+            for w in grid_df.index:
+                for d in grid_df.columns:
+                    val = grid_df.at[w, d]
+                    if pd.notna(val):
+                        out_recs.append({"Type": label, "Distance": d, "Width": w, "Temp": val})
+            return pd.DataFrame(out_recs)
+
+        cold_list = flatten_heatmap(cold_only, "Coldspot")
+        risk_list = flatten_heatmap(risk_only, "RiskArea")
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            grid.to_excel(writer, sheet_name='Heatmap_Grid')
+            if not stops.empty: stops.to_excel(writer, sheet_name='Stops')
+            if not cold_list.empty: cold_list.to_excel(writer, sheet_name='Coldspots', index=False)
+            if not risk_list.empty: risk_list.to_excel(writer, sheet_name='RiskAreas', index=False)
+            
+        st.download_button("📥 Download Excel Report", data=output.getvalue(), file_name="Paver_Analysis_Report.xlsx")
 
 else:
     st.info("Please upload an Excel file or Pave CSV.")
