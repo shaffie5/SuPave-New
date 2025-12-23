@@ -2,7 +2,7 @@
 """
 Created on Fri Aug 8 2025
 @author: SuPAR Group ~ Shaffie & Reza (updated)
-Merged: Robust Data Parsing + Full Quality Metrics + User Explanations + Summary
+Merged: Robust Data Parsing (Fixed Separator Logic) + Full Quality Metrics + Crash Safety
 """
 
 import re
@@ -18,10 +18,10 @@ import pathlib
 import csv
 
 st.set_page_config(page_title="Paving Temperature Visualizer", layout="wide")
-st.title("SuPave Dashboard (Robust + Metrics)")
+st.title("SuPave Dashboard (Robust)")
 
 # ==========================================
-# 0. SUMMARY TEXT (Added as requested)
+# 0. SUMMARY TEXT
 # ==========================================
 with st.expander("**How this Dashboard Works** (Click to Close)", expanded=True):
     st.markdown("""
@@ -33,31 +33,27 @@ with st.expander("**How this Dashboard Works** (Click to Close)", expanded=True)
     
     2.  **Smart Stop Detection (Kinematic)**:
         * Instead of guessing based on cooling, we calculate the **Velocity** of the paver.
-        * It filters out GPS noise ("drift") to accurately identify when the paver stops (e.g., waiting for trucks), which often causes thermal segregation.
+        * It filters out GPS noise ("drift") to accurately identify when the paver stops.
     
     3.  **Key Quality Metrics**:
         * **Heatmaps:** Visualize the entire mat temperature, plus specific **Cold Spots** and **Risk Areas**.
-        * **TSI (Temperature Segregation Index):** Measures how much temperature varies across the width (Max - Mean).
-        * **DRS (Differential Range Statistics):** A robust measure of temperature spread (T98.5 - T1.0).
+        * **TSI (Temperature Segregation Index):** Measures how much temperature varies across the width.
+        * **DRS (Differential Range Statistics):** A robust measure of temperature spread.
     """)
 
-st.caption(
-    "Upload your Paving Data below. The app handles raw CSVs automatically."
-)
+st.caption("Upload your Paving Data below. The app handles raw CSVs automatically.")
 
 # --- Downloadable Excel template section ---
 TEMPLATE_PATH = pathlib.Path("Paver_Upload_Template.xlsx")
 
-with st.expander("Download input template (for manual data)"):
-    st.markdown(
-        """
+with st.expander("📄 Download input template (for manual data)"):
+    st.markdown("""
         **Required columns for Excel:**
         - **Time** → timestamp.
         - **Moving distance** → cumulative distance (m).
         - **Coordinates** → lat/lon or easting/northing.
         - **Temperature columns** → headers like `6.25 m [°C] R`.
-        """
-    )
+    """)
     if TEMPLATE_PATH.exists():
         with open(TEMPLATE_PATH, "rb") as f:
             st.download_button(
@@ -179,7 +175,14 @@ def load_robust_data(uploaded_file):
                         continue
 
     if data_start_idx is not None:
-        sep = ';' if lines[data_start_idx].count(';') > lines[data_start_idx].count(',') else ','
+        # CRITICAL FIX: Determine separator from the HEADER line (data_start + 1), NOT the [DATA] line
+        # The [DATA] line might be empty of separators.
+        if data_start_idx + 1 < len(lines):
+            header_line = lines[data_start_idx+1]
+            sep = ';' if header_line.count(';') > header_line.count(',') else ','
+        else:
+            sep = ';' # Fallback
+            
         data_str = "\n".join(lines[data_start_idx+1:])
         df = pd.read_csv(io.StringIO(data_str), sep=sep)
     else:
@@ -197,6 +200,12 @@ def load_robust_data(uploaded_file):
 # ==========================================
 
 def robust_datetime(series: pd.Series) -> pd.Series:
+    # Heuristic: If date string contains '.', it's likely European (day-first)
+    # This prevents 29.10.2025 from confusing the parser into US format mixed logic
+    sample = series.dropna().iloc[0] if not series.dropna().empty else ""
+    if "." in str(sample):
+        return pd.to_datetime(series, errors="coerce", dayfirst=True)
+        
     dt = pd.to_datetime(series, errors="coerce", utc=False, dayfirst=False)
     if dt.isna().all():
         dt = pd.to_datetime(series, errors="coerce", utc=False, dayfirst=True)
@@ -297,7 +306,11 @@ if uploaded_file:
     # --- SIDEBAR (WITH EXPLANATIONS) ---
     with st.sidebar:
         st.header("Paving Settings")
-        width_min, width_max = st.slider("Paving width range (m)", -6.25, 6.25, (-2.0, 2.0), 0.25)
+        width_min, width_max = st.slider(
+            "Paving width range (m)", 
+            -6.25, 6.25, (-2.0, 2.0), 0.25,
+            help="Select the left and right edges of the paving mat to visualize."
+        )
         st.divider()
         st.subheader("Stop Detection")
         
@@ -362,6 +375,11 @@ if uploaded_file:
     ).sort_index().sort_index(axis=1)
     
     grid = grid.interpolate(method='linear', axis=1, limit=1)
+    
+    # CRITICAL FIX: Empty Data Check
+    if grid.size == 0:
+        st.warning("⚠️ No valid temperature data found for the selected width and filters.")
+        st.stop()
 
     # --- 1. MAIN HEATMAP ---
     st.subheader(f"Paving Temperature Heatmap (Stops: {stop_count})")
@@ -420,10 +438,10 @@ if uploaded_file:
         st.plotly_chart(fig_risk, use_container_width=True)
 
     # --- 4. TSI CALCULATION ---
-    # TSI = Max - Mean per row (per distance bin)
     df_trimmed = pd.DataFrame(grid.T.values, columns=grid.index, index=grid.columns)
-    # Each row is a distance bin, columns are widths
     temps_arr = df_trimmed.values
+    
+    # TSI
     tsi_per_row = np.nanmax(temps_arr, axis=1) - np.nanmean(temps_arr, axis=1)
     avg_tsi = np.nanmean(tsi_per_row)
 
@@ -432,10 +450,9 @@ if uploaded_file:
     st.metric("Average TSI", f"{avg_tsi:.2f} °C")
 
     # --- 5. DRS CALCULATION & HISTOGRAM ---
-    # DRS = T98.5 - T1.0 per row
     st.subheader("Differential Range Statistics (DRS: T98.5 - T1)")
     
-    valid_mask = np.sum(~np.isnan(temps_arr), axis=1) >= 10  # Require at least 10 valid points
+    valid_mask = np.sum(~np.isnan(temps_arr), axis=1) >= 10
     drs_values = []
     
     for row in temps_arr[valid_mask]:
@@ -516,7 +533,6 @@ if uploaded_file:
     # --- 7. EXPORT ---
     st.subheader("Export Data")
     if st.button("Download Analysis (Excel)"):
-        # Helper to map grid cells back to rows (simplistic)
         def flatten_heatmap(grid_df, label):
             out_recs = []
             for w in grid_df.index:
