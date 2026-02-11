@@ -261,7 +261,25 @@ def detect_stops_kinematic(df: pd.DataFrame, time_col: str, dist_col: str,
 # 3. MAIN APP UI
 # ==========================================
 
-uploaded_file = st.file_uploader("Upload your file", type=["xlsx", "xls", "csv"])
+# Enhanced File Import Section
+st.subheader("📂 Import Data from Your Computer")
+st.markdown("""
+    **Supported file formats:**
+    - **Excel files** (`.xlsx`, `.xls`) - Use the template format
+    - **CSV files** (`.csv`) - Raw scanner data or formatted templates
+    
+    **How to import:**
+    1. Click the "Browse files" button below
+    2. Select your paving data file from your computer
+    3. Or drag and drop your file into the upload area
+""")
+
+uploaded_file = st.file_uploader(
+    "Choose a file from your computer",
+    type=["xlsx", "xls", "csv"],
+    help="Select an Excel (.xlsx, .xls) or CSV (.csv) file containing your paving temperature data",
+    accept_multiple_files=False
+)
 
 if uploaded_file:
     # --- LOAD DATA (ROBUST) ---
@@ -555,4 +573,4 @@ if uploaded_file:
         st.download_button("Download Excel Report", data=output.getvalue(), file_name="Paver_Analysis_Report.xlsx")
 
 else:
-    st.info("Please upload an Excel file or Pave CSV.")
+    st.info("👆 Please import a file from your computer using the file uploader above.")
